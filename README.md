@@ -1,2 +1,251 @@
-# data
-使用langGraph搭建一个完整的 ReAct Agent。作用是用于问数和数据分析加上可视化。和传统的text_to_sql的区别是将工具封装为skill,同时加入记忆功能。面对用户问题是询问数据库内的具体数据查询时，由于具体数值格式多样，导致查询失败的现象在现有框架下能够很好解决。
+# Deep Agents 数据分析 Agent
+
+基于 LangChain Deep Agents 框架的智能数据分析 Agent，具备任务规划、子 Agent 派发、记忆管理等高级功能。
+
+## 特性
+
+- ✅ **任务规划** - 自动分解复杂任务，TODO List 跟踪进度
+- ✅ **子 Agent 系统** - 专业化分工（SQL/数据分析/可视化）
+- ✅ **文件系统** - 短期/长期记忆管理
+- ✅ **记忆摘要** - 自动压缩历史对话
+- ✅ **上下文管理** - 智能控制 token 使用
+
+## 快速开始
+
+### 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+如需运行测试，需安装开发依赖：
+
+```bash
+# 方式一：通过 pyproject.toml 可选依赖组安装
+pip install -e ".[dev]"
+
+# 方式二：手动安装测试依赖
+pip install pytest pytest-asyncio
+```
+
+### 配置环境变量
+
+```bash
+cp .env.example .env
+# 编辑 .env 文件，填入你的 API Key
+```
+
+### 启动服务
+
+```bash
+# 一键启动（容器内推荐）
+bash scripts/start.sh
+
+# 使用 LangGraph CLI
+langgraph dev
+
+# 或使用 Python 直接运行
+python graph.py
+```
+
+## 使用方法
+
+### 1. LangGraph CLI 方式
+
+```bash
+langgraph dev
+```
+
+然后在浏览器中访问 `http://localhost:2024`。
+
+### 2. 编程方式
+
+```python
+from graph import get_supervisor_agent
+
+# 获取 Agent 实例
+agent = get_supervisor_agent()
+
+# 调用 Agent
+response = await agent.invoke(
+    "分析设备告警趋势并生成报告",
+    thread_id="session_1"
+)
+
+# 查看 Agent 状态
+status = agent.get_status()
+print(status)
+```
+
+### 3. 烟测（依赖就绪后）
+
+```bash
+python -m scripts.run_smoke
+```
+
+### 3. 查看工具信息
+
+```python
+from graph import get_tools, get_agent_status
+
+# 获取所有工具
+tools = get_tools()
+
+# 获取 Agent 状态
+status = get_agent_status()
+```
+
+## 架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Supervisor Agent                          │
+│              (任务规划 + 子 Agent 协调)                       │
+└─────────────────────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────────┐
+│   SQL Agent  │    │  Data Agent  │    │   Viz Agent      │
+│  (SQL 查询)   │    │  (数据分析)   │    │  (可视化)        │
+└──────────────┘    └──────────────┘    └──────────────────┘
+```
+
+## 子 Agent
+
+### SQL Specialist
+
+- **职责**: 生成和执行 SQL 查询
+- **输出**: `/files/sql_result_*.json`
+
+### Data Analyst
+
+- **职责**: 统计分析和数据洞察
+- **输出**: `/files/analysis_*.json`
+
+### Visualization Specialist
+
+- **职责**: 创建专业图表
+- **输出**: `images/chart_*.png`
+
+## 文件系统
+
+### 短期记忆 (`/files/`)
+
+- 临时查询结果
+- 中间处理数据
+- 会话结束后清理
+
+### 长期记忆 (`/memories/`)
+
+- 用户偏好设置
+- 历史分析模式
+- 跨会话持久化
+
+## 工具列表
+
+### 文件系统工具
+
+- `ls` - 列出目录内容
+- `read_file` - 读取文件
+- `write_file` - 写入文件
+- `edit_file` - 编辑文件
+
+### TODO List 工具
+
+- `create_todo` - 创建任务
+- `update_todo` - 更新任务状态
+- `list_todos` - 列出所有任务
+- `get_todo` - 获取任务详情
+
+### 子 Agent 工具
+
+- `delegate_to_sql_specialist` - 委派给 SQL 专家
+- `delegate_to_data_analyst` - 委派给数据分析师
+- `delegate_to_visualization_specialist` - 委派给可视化专家
+
+## 示例对话
+
+### 示例 1: 简单查询
+
+```
+用户: 查询设备类型表的前10条记录
+Agent: 
+  1. create_todo: "查询设备类型数据"
+  2. delegate_to_sql_specialist: 执行查询
+  3. 返回结果
+```
+
+### 示例 2: 复杂分析
+
+```
+用户: 分析设备告警趋势并生成报告
+Agent:
+  1. create_todo: "查询告警数据"
+  2. create_todo: "分析告警趋势"
+  3. create_todo: "创建可视化图表"
+  4. create_todo: "生成分析报告"
+  5. 依次委派给子 Agent
+  6. 汇总结果
+```
+
+## 配置
+
+### 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `SILICONFLOW_API_KEY` | API Key | - |
+| `SILICONFLOW_BASE_URL` | API 地址 | https://api.siliconflow.cn/v1 |
+| `DEFAULT_MODEL` | 默认模型 | deepseek-ai/DeepSeek-V3 |
+| `DB_HOST` | 数据库主机 | localhost |
+| `DB_PORT` | 数据库端口 | 3306 |
+
+### LangGraph 配置
+
+```json
+{
+  "dependencies": ["./"],
+  "graphs": {
+    "data_agent": "./graph.py:data_agent"
+  }
+}
+```
+
+## 开发
+
+### 项目结构
+
+```
+.
+├── agents/              # Agent 层
+│   ├── supervisor.py    # 主 Agent
+│   └── subagents/       # 子 Agent
+├── middleware/          # 中间件层
+├── memory/              # 记忆管理
+├── filesystem/          # 文件系统后端
+├── tools/               # 工具层
+├── config/              # 配置
+└── graph.py             # 主入口
+```
+
+### 添加子 Agent
+
+1. 在 `agents/subagents/` 创建新文件
+2. 定义 SubAgent 配置
+3. 在 `agents/supervisor.py` 注册
+
+### 添加中间件
+
+1. 在 `middleware/` 创建新文件
+2. 实现中间件类
+3. 在 `agents/supervisor.py` 集成
+
+## 文档
+
+- [架构文档](docs/DEEP_AGENTS_ARCHITECTURE.md) - 详细架构说明
+- [开发指南](docs/development.md) - 开发规范
+
+## 许可证
+
+MIT

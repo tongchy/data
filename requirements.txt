@@ -1,0 +1,34 @@
+# Deep Agents 数据分析 Agent 依赖
+
+# LangChain 核心
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-openai>=0.1.0
+
+# 配置和环境
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# API 服务
+fastapi>=0.110.0
+uvicorn>=0.27.0
+
+# 数据分析和可视化
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# 数据库
+pymysql>=1.1.0
+sqlalchemy>=2.0.0
+
+# 工具
+ipython>=8.0.0
+
+# 监控和日志
+langsmith>=0.1.0
+
+# 其他
+uv>=0.4.0
