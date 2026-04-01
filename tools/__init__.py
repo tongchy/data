@@ -10,6 +10,7 @@ from tools.dynamic_registry import DynamicToolRegistry
 from tools.sql.query_tool import SQLQueryTool
 from tools.data.extract_tool import DataExtractTool
 from tools.code.python_executor import PythonExecutorTool
+from tools.code.llm_skill_tool import LLMSkillTool
 from tools.visualization.plot_tool import PlotTool
 from tools.loader.table_metadata import TableMetadataTool
 

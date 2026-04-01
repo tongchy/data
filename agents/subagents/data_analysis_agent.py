@@ -41,7 +41,13 @@ DATA_ANALYSIS_SUBAGENT = SubAgent(
    - 将分析结果保存到 /files/analysis_{task_id}.json
    - 包含统计指标和可视化建议
 
+6. **工具选择策略**
+    - 对于总结、摘要、改写、分类、字段抽取等纯文本任务，优先使用 llm_skill
+    - 只有在需要真实计算、DataFrame 处理或统计推导时，才使用 python_inter
+    - 不要把纯文本任务误判为 Python 分析任务
+
 可用工具：
+- llm_skill: 执行总结、改写、分类、结构化提取
 - python_inter: 执行 Python 代码（pandas、numpy、scipy）
 - read_file: 读取数据文件
 - write_file: 保存分析结果
@@ -76,7 +82,8 @@ def create_data_analysis_agent(tools: List[Callable] = None) -> SubAgent:
         agent.tools = tools
     else:
         # 默认工具
+        from tools.code.llm_skill_tool import llm_skill
         from tools.code.python_executor import python_inter
-        agent.tools = [python_inter]
+        agent.tools = [llm_skill, python_inter]
     
     return agent

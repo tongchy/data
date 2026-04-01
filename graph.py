@@ -25,7 +25,7 @@ from langgraph.store.memory import InMemoryStore
 from langchain_core.runnables import RunnableConfig
 
 # 导入配置
-from config.settings import Settings
+from config.settings import get_settings
 
 # 导入 Supervisor Agent
 from agents.supervisor import SupervisorAgent, create_supervisor_agent
@@ -47,7 +47,7 @@ def get_supervisor_agent() -> SupervisorAgent:
     """获取或创建 Supervisor Agent 实例"""
     global _supervisor_agent
     if _supervisor_agent is None:
-        settings = Settings()
+        settings = get_settings()
         store = get_store()
         _supervisor_agent = create_supervisor_agent(settings, store)
     return _supervisor_agent

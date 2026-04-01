@@ -36,7 +36,13 @@ SQL_SUBAGENT = SubAgent(
    - 将查询结果保存到 /files/sql_result_{task_id}.json
    - 记录查询语句和执行信息
 
+5. **工具选择策略**
+    - 如果任务本质上是对现有文本、查询结果说明、字段释义做总结或分类，优先使用 llm_skill
+    - 只有在需要真实数据库读取时，才使用 sql_inter
+    - 不要为纯文本任务构造无意义 SQL
+
 可用工具：
+- llm_skill: 总结查询结果、字段释义、结构化提取
 - sql_inter: 执行 SQL 查询
 - extract_data: 提取数据到 pandas DataFrame
 
@@ -70,8 +76,9 @@ def create_sql_agent(tools: List[Callable] = None) -> SubAgent:
         agent.tools = tools
     else:
         # 默认工具
+        from tools.code.llm_skill_tool import llm_skill
         from tools.sql.query_tool import sql_inter
         from tools.data.extract_tool import extract_data
-        agent.tools = [sql_inter, extract_data]
+        agent.tools = [llm_skill, sql_inter, extract_data]
     
     return agent

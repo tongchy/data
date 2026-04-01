@@ -1,8 +1,11 @@
 """API integration tests."""
 
 import json
+from types import SimpleNamespace
 
 from api.routes import chat as chat_route
+from agents.supervisor import SupervisorAgent
+from config.settings import Settings
 
 
 class DummySupervisor:
@@ -43,3 +46,34 @@ def test_chat_stream_route_uses_supervisor(test_client, monkeypatch):
     assert events[0]["type"] == "assistant"
     assert events[0]["content"] == "supervisor:画图:stream-1"
     assert events[-1]["done"] is True
+
+
+def test_chat_route_hits_text_processing_branch(test_client, monkeypatch):
+    captured = {}
+
+    class FakeRuntimeAgent:
+        async def ainvoke(self, payload, config=None):
+            return {"messages": [SimpleNamespace(content="text-branch-hit", type="ai")]}
+
+    def fake_create_react_agent(**kwargs):
+        if kwargs.get("name") == "supervisor_agent_runtime":
+            captured["tool_names"] = [tool.name for tool in kwargs["tools"]]
+            captured["prompt"] = kwargs["prompt"]
+        return FakeRuntimeAgent()
+
+    monkeypatch.setattr("agents.supervisor.create_llm", lambda settings: object())
+    monkeypatch.setattr("agents.supervisor.create_react_agent", fake_create_react_agent)
+
+    agent = SupervisorAgent(Settings(), store=None)
+    monkeypatch.setattr(chat_route, "get_agent", lambda thread_id: agent)
+
+    response = test_client.post(
+        "/api/chat",
+        json={"message": "请总结并分类下面这段文本", "thread_id": "api-text-1", "stream": False},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["content"] == ""
+    assert "llm_skill" in captured["tool_names"]
+    assert "优先使用 llm_skill" in captured["prompt"]

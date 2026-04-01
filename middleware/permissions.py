@@ -88,7 +88,7 @@ class PermissionManager:
 
         # 执行工具
         for tool in (
-            "python_inter", "fig_inter", "summarize_conversation",
+            "python_inter", "fig_inter", "summarize_conversation", "llm_skill",
             "delegate_to_sql_specialist",
             "delegate_to_data_analyst",
             "delegate_to_visualization_specialist",

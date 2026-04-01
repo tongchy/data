@@ -21,6 +21,7 @@ class TaskType(str, Enum):
     DATA_ANALYSIS = "data_analysis"   # 数据分析任务
     VISUALIZATION = "visualization"   # 可视化任务
     FILE_OPERATION = "file_operation" # 文件操作任务
+    TEXT_PROCESSING = "text_processing" # 总结/改写/分类/提取
     GENERAL = "general"               # 通用任务
 
 
@@ -103,6 +104,13 @@ class ToolLoader(BaseCustomTool):
                 category="code",
                 task_types=[TaskType.DATA_ANALYSIS, TaskType.VISUALIZATION, TaskType.GENERAL],
                 token_cost=100
+            ),
+            ToolMetadata(
+                name="llm_skill",
+                description="LLM 文本推理工具",
+                category="model",
+                task_types=[TaskType.TEXT_PROCESSING, TaskType.DATA_ANALYSIS, TaskType.GENERAL],
+                token_cost=110
             ),
             ToolMetadata(
                 name="fig_inter",
@@ -188,6 +196,14 @@ class ToolLoader(BaseCustomTool):
             TaskType: 检测到的任务类型
         """
         query_lower = query.lower()
+
+        # 纯文本处理关键词，优先于通用分析分支
+        text_keywords = [
+            '总结', '摘要', '概括', '改写', '重写', '润色', '分类', '归类',
+            '标签', '提取', '抽取', '翻译', '改成', '整理要点', '归纳'
+        ]
+        if any(kw in query_lower for kw in text_keywords):
+            return TaskType.TEXT_PROCESSING
         
         # SQL 查询关键词
         sql_keywords = ['查询', 'select', 'where', 'sql', '表', '数据', '统计', '多少', '计数']

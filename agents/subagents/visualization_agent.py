@@ -47,7 +47,13 @@ VISUALIZATION_SUBAGENT = SubAgent(
    - 路径: images/chart_{task_id}.png
    - 记录图表说明
 
+6. **工具选择策略**
+    - 如果任务是总结图表结论、改写图表说明、提取图表洞察，优先使用 llm_skill
+    - 只有在需要实际绘图时，才使用 fig_inter
+    - 不要把纯文本说明任务误判为绘图任务
+
 可用工具：
+- llm_skill: 总结图表洞察、改写说明、结构化抽取
 - fig_inter: 执行绘图代码
 - read_file: 读取分析结果
 - write_file: 保存图表说明
@@ -85,7 +91,8 @@ def create_visualization_agent(tools: List[Callable] = None) -> SubAgent:
         agent.tools = tools
     else:
         # 默认工具
+        from tools.code.llm_skill_tool import llm_skill
         from tools.visualization.plot_tool import fig_inter
-        agent.tools = [fig_inter]
+        agent.tools = [llm_skill, fig_inter]
     
     return agent
