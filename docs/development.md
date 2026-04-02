@@ -1,163 +1,87 @@
 # 开发指南
 
-## 环境搭建
+> 同步日期：2026-04-02
 
-### 1. 克隆仓库
-
-```bash
-git clone <repository-url>
-cd data-analysis-agent
-```
-
-### 2. 创建虚拟环境
+## 1. 环境准备
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或
-venv\Scripts\activate  # Windows
-```
-
-### 3. 安装依赖
-
-```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-pip install -e ".[dev]"  # 安装开发依赖
-```
-
-### 4. 配置环境变量
-
-```bash
+pip install -e ".[dev]"
 cp .env.example .env
-# 编辑 .env 文件，填入你的配置
 ```
 
-关键配置项：
+## 2. 关键配置
 
-```bash
-# 模型（SiliconFlow）
-MODEL_API_KEY=your_siliconflow_api_key
+`.env` 常用项：
+
+```env
+# 模型
+MODEL_API_KEY=
 MODEL_BASE_URL=https://api.siliconflow.cn/v1
 MODEL_MODEL_NAME=deepseek-ai/DeepSeek-V3
 
 # 数据库
 DB_HOST=localhost
+DB_PORT=3306
 DB_USER=root
-DB_PASSWORD=your_password
+DB_PASSWORD=
 DB_DATABASE=alarm
+
+# HITL / Checkpointer
+ENABLE_HITL=false
+HITL_TIMEOUT_SECONDS=300
+CHECKPOINTER_BACKEND=memory
+CHECKPOINTER_PATH=./.langgraph_checkpoints.sqlite
+
+# 日志
+LOG_LEVEL=INFO
 ```
 
-## 代码规范
+## 3. 运行方式
 
-### 代码风格
-
-使用 Black 格式化代码：
+### 3.1 LangGraph 调试（推荐）
 
 ```bash
-black .
-```
-
-### 类型检查
-
-使用 mypy 进行类型检查：
-
-```bash
-mypy .
-```
-
-### 代码检查
-
-使用 flake8 检查代码：
-
-```bash
-flake8 .
-```
-
-## 测试
-
-## 启动开发服务
-
-### 首选方式：LangGraph Dev
-
-```bash
-# 启动 LangGraph 调试服务器（推荐，提供 Web Studio）
 langgraph dev
-# 访问 http://localhost:2024
 ```
 
-### 其他方式
+### 3.2 FastAPI
 
 ```bash
-# FastAPI REST 服务
 python scripts/run_api.py
 # 或
 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 数据语义层预热（可选）
-
-首次发送 SQL 任务时系统会自动构建向量语义层（需访问数据库 + SiliconFlow Embedding API）。
-如需提前预热，可在启动后发送：
-```
-"请重建数据语义层"
-→ Supervisor 调用 rebuild_data_semantic_layer()
-```
-
-### 运行所有测试
+## 4. 测试命令
 
 ```bash
 pytest
 ```
 
-### 运行特定测试
+常用回归：
 
 ```bash
-pytest tests/unit/test_tools/
+pytest tests/unit/test_agents/test_graph_checkpointer.py tests/unit/test_agents/test_supervisor_resume.py -q
+pytest tests/unit/test_middleware/test_hitl.py -q
+pytest tests/unit/test_middleware/test_context_compaction.py -q
+pytest tests/unit/test_middleware/test_sql_execution_pipeline.py -q
+pytest tests/integration/test_api.py -q
 ```
 
-### 生成覆盖率报告
+## 5. 调试要点
 
-```bash
-pytest --cov=. --cov-report=html
-```
+- SQL 链路入口：`SubAgentMiddleware._run_sql_specialist`
+- HITL 恢复入口：`SupervisorAgent.resume`
+- API 恢复路由：`POST /api/resume`
+- checkpointer 创建：`graph.py:get_checkpointer`
 
-## 调试
+## 6. 文档维护建议
 
-### 启用调试日志
-
-在 `.env` 中设置：
-
-```env
-LOG_LEVEL=DEBUG
-```
-
-### 使用 LangSmith 追踪
-
-在 `.env` 中配置：
-
-```env
-LANGSMITH_API_KEY=your_key
-LANGSMITH_PROJECT=data-agent-dev
-```
-
-## 提交规范
-
-使用 Conventional Commits：
-
-```
-feat: 添加新功能
-fix: 修复 bug
-docs: 更新文档
-style: 代码格式调整
-refactor: 重构代码
-test: 添加测试
-chore: 构建过程或辅助工具的变动
-```
-
-## 发布流程
-
-1. 更新版本号（`pyproject.toml`）
-2. 更新 CHANGELOG
-3. 创建 Git 标签
-4. 构建 Docker 镜像
-5. 部署到生产环境
+每次涉及以下改动后请同步 `docs/`：
+- 新增或变更 API 路由
+- 变更 SQL 校验/执行策略
+- 变更上下文摘要策略
+- 变更 checkpointer 与恢复行为

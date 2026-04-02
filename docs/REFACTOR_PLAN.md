@@ -1,5 +1,8 @@
 # LangChain 数据分析 Agent 架构级重构计划
 
+> 状态同步（2026-04-02）：核心重构路径已完成，本文档保留为“架构演进记录”。
+> 现状以代码为准：`graph.py`、`agents/supervisor.py`、`middleware/subagent.py`、`api/routes/resume.py`。
+
 ## 📋 文档版本
 
 - **版本**: v2.1

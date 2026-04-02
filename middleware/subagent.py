@@ -4,10 +4,11 @@ SubAgent Middleware - 子 Agent 中间件
 提供子 Agent 派发机制，实现专业化分工和上下文隔离
 """
 
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass, field
 import json
 import re
+import time
 
 import numpy as np
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -58,7 +59,14 @@ class SubAgentMiddleware:
     - 任务委派
     """
     
-    def __init__(self, subagents: List[SubAgent], backend: Optional[Any] = None):
+    def __init__(
+        self,
+        subagents: List[SubAgent],
+        backend: Optional[Any] = None,
+        settings: Optional[Any] = None,
+        sql_generator_agent: Optional[SubAgent] = None,
+        context_guardian_agent: Optional[SubAgent] = None,
+    ):
         """
         初始化子 Agent 中间件
         
@@ -69,6 +77,15 @@ class SubAgentMiddleware:
         self.backend = backend
         self._results_cache: Dict[str, Any] = {}
         self._subagent_errors: Dict[str, str] = {}
+        self.settings = settings or get_settings()
+        self.sql_generator_agent = sql_generator_agent
+        self.context_guardian_agent = context_guardian_agent
+        self._context_slots: Dict[str, List[str]] = {
+            "decision_summary": [],
+            "sql_summary": [],
+            "error_summary": [],
+            "schema_summary": [],
+        }
         # 数据语义层缓存：{table_name: {columns, sample, metadata, embedding}}
         # None 表示尚未构建；空 dict 表示构建过但 DB 无表
         self._semantic_layer: Optional[Dict[str, Any]] = None
@@ -191,7 +208,7 @@ class SubAgentMiddleware:
             task_prompt = self._build_task_prompt(task, context)
 
             if subagent.name == "sql_specialist":
-                return self._run_sql_specialist(tool_map, task_prompt)
+                return self._run_sql_specialist(tool_map, task_prompt, context or {})
 
             return self._run_generic_subagent(subagent, task_prompt)
 
@@ -522,6 +539,15 @@ class SubAgentMiddleware:
 
     def _generate_sql_with_llm(self, task_prompt: str, schema_context: str, tool_map: Dict[str, Any]) -> Optional[str]:
         """使用 llm_skill 结构化生成 SQL。"""
+        return self.generate_sql_via_agent(task_prompt, schema_context, tool_map)
+
+    def generate_sql_via_agent(
+        self,
+        task_prompt: str,
+        schema_context: str,
+        tool_map: Dict[str, Any],
+    ) -> Optional[str]:
+        """通过 sql_generator_agent（默认 llm_skill）生成 SQL。"""
         if "llm_skill" not in tool_map:
             return None
 
@@ -533,11 +559,13 @@ class SubAgentMiddleware:
             }
         }
 
+        runtime_prompt = self._compose_runtime_prompt_from_slots(self._context_slots)
         prompt = (
-            "请根据任务和表结构信息，生成一条可执行的 MySQL SELECT 语句。"
-            "仅返回 JSON，字段为 sql_query。\n\n"
+            "你是 SQL 生成代理，请严格输出 JSON：{\"sql_query\":\"SELECT ...\"}。"
+            "仅允许 SELECT/WITH 查询。\n\n"
             f"任务:\n{task_prompt}\n\n"
-            f"表结构与样例:\n{schema_context}"
+            f"表结构与样例:\n{schema_context}\n\n"
+            f"上下文摘要槽位:\n{runtime_prompt}"
         )
 
         llm_result = self._invoke_tool_by_name(
@@ -549,19 +577,315 @@ class SubAgentMiddleware:
         )
         return self._extract_sql_from_text(str(llm_result))
 
-    def _run_sql_specialist(self, tool_map: Dict[str, Any], task_prompt: str) -> str:
+    def validate_sql_for_executor(self, sql_query: str) -> Tuple[bool, str]:
+        """执行前 SQL 契约校验。"""
+        sql = (sql_query or "").strip()
+        if not sql:
+            return False, "sql_query 为空"
+
+        normalized = sql.upper().strip()
+        if not (normalized.startswith("SELECT") or normalized.startswith("WITH")):
+            return False, "仅允许 SELECT/WITH 查询"
+
+        forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"]
+        for keyword in forbidden:
+            if re.search(rf"\\b{keyword}\\b", normalized):
+                return False, f"包含危险关键字: {keyword}"
+
+        return True, "ok"
+
+    def repair_sql_on_error(
+        self,
+        sql_query: str,
+        error_text: str,
+        schema_context: str,
+        tool_map: Dict[str, Any],
+    ) -> Optional[str]:
+        """基于执行错误尝试修复 SQL（最多一次）。"""
+        if "llm_skill" not in tool_map:
+            return None
+
+        output_schema = {
+            "type": "object",
+            "required": ["sql_query"],
+            "properties": {"sql_query": {"type": "string", "minLength": 5}},
+        }
+        prompt = (
+            "请修复以下 SQL 执行错误，返回可执行 MySQL SELECT 语句。仅返回 JSON。\n\n"
+            f"原 SQL:\n{sql_query}\n\n"
+            f"错误信息:\n{error_text}\n\n"
+            f"表结构与样例:\n{schema_context}"
+        )
+        llm_result = self._invoke_tool_by_name(
+            tool_map,
+            "llm_skill",
+            prompt=prompt,
+            json_mode=True,
+            output_schema=output_schema,
+        )
+        return self._extract_sql_from_text(str(llm_result))
+
+    def _build_context_keep_whitelist(self, task_prompt: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """构建高价值上下文白名单。"""
+        return {
+            "task_goal": task_prompt[:300],
+            "latest_valid_sql": context.get("latest_valid_sql", ""),
+            "latest_error": context.get("latest_error", ""),
+            "schema_digest": context.get("schema_digest", ""),
+            "tool_decision": context.get("tool_decision", ""),
+        }
+
+    def _build_context_drop_blacklist(self, tool_outputs: List[Any]) -> Dict[str, Any]:
+        """构建低价值上下文黑名单摘要。"""
+        dropped = []
+        for out in tool_outputs:
+            text = str(out)
+            if len(text) > 800:
+                dropped.append(text[:120] + "...")
+        return {"dropped_payloads": dropped[:5]}
+
+    def _llm_summarize_context(
+        self,
+        task_prompt: str,
+        context: Dict[str, Any],
+        tool_outputs: List[Any],
+        tool_map: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """LLM 主路径摘要。"""
+        if "llm_skill" not in tool_map:
+            raise RuntimeError("llm_skill 不可用")
+
+        output_schema = {
+            "type": "object",
+            "required": [
+                "task_goal",
+                "tool_decision",
+                "sql_reasoning",
+                "latest_valid_sql",
+                "latest_error",
+                "schema_digest",
+                "next_action",
+            ],
+            "properties": {
+                "task_goal": {"type": "string"},
+                "tool_decision": {"type": "string"},
+                "sql_reasoning": {"type": "string"},
+                "latest_valid_sql": {"type": "string"},
+                "latest_error": {"type": "string"},
+                "schema_digest": {"type": "string"},
+                "next_action": {"type": "string"},
+            },
+        }
+        prompt = (
+            "请将以下上下文压缩为结构化 JSON 摘要，不要输出多余文字。\n\n"
+            f"任务: {task_prompt}\n"
+            f"上下文: {json.dumps(context, ensure_ascii=False, default=str)[:2500]}\n"
+            f"工具输出: {json.dumps([str(x)[:500] for x in tool_outputs], ensure_ascii=False)}"
+        )
+        raw = self._invoke_tool_by_name(
+            tool_map,
+            "llm_skill",
+            prompt=prompt,
+            json_mode=True,
+            output_schema=output_schema,
+        )
+        text = str(raw)
+        parsed = json.loads(text) if text.strip().startswith("{") else {}
+        if not parsed:
+            match = re.search(r"\{[\s\S]*\}", text)
+            if match:
+                parsed = json.loads(match.group(0))
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM 摘要非 JSON 对象")
+        return parsed
+
+    def _rule_summarize_fallback(
+        self,
+        task_prompt: str,
+        context: Dict[str, Any],
+        tool_outputs: List[Any],
+    ) -> Dict[str, Any]:
+        """规则兜底摘要。"""
+        latest_sql = str(context.get("latest_valid_sql", ""))[:1000]
+        latest_error = str(context.get("latest_error", ""))[:1000]
+        schema_digest = str(context.get("schema_digest", ""))[:800]
+        return {
+            "task_goal": task_prompt[:300],
+            "tool_decision": "使用 sql_specialist + sql_generator 生成并执行 SQL",
+            "sql_reasoning": "优先根据语义层匹配结果选择相关表并生成 SELECT",
+            "latest_valid_sql": latest_sql,
+            "latest_error": latest_error,
+            "schema_digest": schema_digest,
+            "next_action": "继续执行 SQL 或根据错误重试修复",
+            "_fallback": True,
+            "_tool_outputs": [str(x)[:200] for x in tool_outputs[:3]],
+        }
+
+    def _route_summary_to_slots(self, summary: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """将结构化摘要路由到槽位。"""
+        slots = context.setdefault("summary_slots", self._context_slots)
+
+        def _append(slot_key: str, value: str) -> None:
+            slot = slots.setdefault(slot_key, [])
+            if value:
+                slot.append(value)
+            slots[slot_key] = slot[-3:]
+
+        _append("decision_summary", str(summary.get("tool_decision", "")))
+        _append("schema_summary", str(summary.get("schema_digest", "")))
+        _append("sql_summary", str(summary.get("sql_reasoning", "")) + "\n" + str(summary.get("latest_valid_sql", "")))
+        _append("error_summary", str(summary.get("latest_error", "")))
+
+        self._context_slots = slots
+        return context
+
+    def _compose_runtime_prompt_from_slots(self, context: Dict[str, Any]) -> str:
+        """将摘要槽位拼接为运行时 prompt。"""
+        slots = context.get("summary_slots", self._context_slots)
+        blocks: List[str] = []
+
+        decision = slots.get("decision_summary", [])
+        schema = slots.get("schema_summary", [])
+        sql = slots.get("sql_summary", [])
+        error = slots.get("error_summary", [])
+
+        if decision:
+            blocks.append("[decision_summary]\n" + "\n".join(decision[-3:]))
+        if schema:
+            blocks.append("[schema_summary]\n" + "\n".join(schema[-3:]))
+        if sql:
+            blocks.append("[sql_summary]\n" + "\n".join(sql[-3:]))
+        if error:
+            blocks.append("[error_summary]\n" + "\n".join(error[-3:]))
+
+        return "\n\n".join(blocks) if blocks else "(no summary slots)"
+
+    def context_compact_gate(
+        self,
+        task_prompt: str,
+        context: Dict[str, Any],
+        tool_outputs: List[Any],
+        tool_map: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """上下文压缩闸门：LLM 主路径，规则兜底，并写入快照。"""
+        keep = self._build_context_keep_whitelist(task_prompt, context)
+        drop = self._build_context_drop_blacklist(tool_outputs)
+        work_ctx = {**context, **keep, **drop}
+        try:
+            summary = self._llm_summarize_context(task_prompt, work_ctx, tool_outputs, tool_map)
+        except Exception:
+            summary = self._rule_summarize_fallback(task_prompt, work_ctx, tool_outputs)
+
+        updated_context = self._route_summary_to_slots(summary, context)
+        updated_context["latest_summary"] = summary
+
+        thread_id = str(updated_context.get("thread_id") or "default")
+        snapshot_path = f"/files/context_snapshot_{thread_id}.md"
+        snapshot_text = (
+            f"# Context Snapshot\n\n"
+            f"- timestamp: {int(time.time())}\n"
+            f"- thread_id: {thread_id}\n\n"
+            f"## summary\n{json.dumps(summary, ensure_ascii=False, indent=2, default=str)}\n\n"
+            f"## runtime_slots\n{self._compose_runtime_prompt_from_slots(updated_context)}\n"
+        )
+        if self.backend is not None:
+            self.backend.write_file(snapshot_path, snapshot_text, append=False)
+
+        return updated_context
+
+    def _hitl_interrupt(self, sql_query: str, schema_digest: str, task_goal: str) -> Optional[Dict[str, Any]]:
+        """执行前 HITL 中断。resume 后返回决策载荷。"""
+        if not getattr(self.settings, "enable_hitl", False):
+            return None
+        from langgraph.types import interrupt
+
+        payload = {
+            "stage": "pre_execution",
+            "sql_query": sql_query,
+            "schema_digest": schema_digest,
+            "task_goal": task_goal,
+        }
+        resumed = interrupt(payload)
+        if isinstance(resumed, dict):
+            return resumed
+        return None
+
+    def _hitl_resume_handler(
+        self,
+        resume: Dict[str, Any],
+        sql_query: str,
+        schema_context: str,
+        tool_map: Dict[str, Any],
+    ) -> Optional[str]:
+        """处理 approve/edit/reject 三种恢复决策。"""
+        decision = str((resume or {}).get("decision", "approve")).lower()
+        if decision == "approve":
+            return sql_query
+        if decision == "edit":
+            edited = str((resume or {}).get("edited_sql", "")).strip()
+            ok, reason = self.validate_sql_for_executor(edited)
+            if not ok:
+                raise ValueError(f"HITL edit SQL 校验失败: {reason}")
+            return edited
+        if decision == "reject":
+            return None
+        return sql_query
+
+    def _run_sql_specialist(
+        self,
+        tool_map: Dict[str, Any],
+        task_prompt: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """SQL 专家：先提取表结构/样例，再生成 SQL，最后执行并校验。"""
+        context = dict(context or {})
+        context.setdefault("thread_id", context.get("thread_id") or "default")
+
+        context = self.context_compact_gate(task_prompt, context, [], tool_map)
         schema_context = self._collect_table_context(task_prompt, tool_map)
-        sql_query = self._generate_sql_with_llm(task_prompt, schema_context, tool_map)
+        context["schema_digest"] = schema_context[:800]
+        sql_query = self.generate_sql_via_agent(task_prompt, schema_context, tool_map)
 
         # LLM 生成失败时回退规则 SQL
         if not sql_query:
             sql_query = self._select_sql_for_task(task_prompt)
 
+        is_valid, reason = self.validate_sql_for_executor(sql_query)
+        if not is_valid:
+            return f"SQL 契约校验失败: {reason}\nSQL: {sql_query}"
+
+        context["latest_valid_sql"] = sql_query
+
+        resume_payload = self._hitl_interrupt(sql_query, context.get("schema_digest", ""), task_prompt)
+        if resume_payload is not None:
+            sql_after_hitl = self._hitl_resume_handler(resume_payload, sql_query, schema_context, tool_map)
+            if sql_after_hitl is None:
+                reason_text = str((resume_payload or {}).get("reason", "用户拒绝执行"))
+                return f"SQL 执行已被人工拒绝: {reason_text}"
+            sql_query = sql_after_hitl
+            context["latest_valid_sql"] = sql_query
+
         sql_result = self._invoke_tool_by_name(tool_map, "sql_inter", sql_query=sql_query)
         sql_result_text = str(sql_result)
 
         if "执行失败" in sql_result_text or "SQL 执行失败" in sql_result_text:
+            context["latest_error"] = sql_result_text
+            context = self.context_compact_gate(task_prompt, context, [sql_result_text], tool_map)
+            repaired_sql = self.repair_sql_on_error(sql_query, sql_result_text, schema_context, tool_map)
+
+            if repaired_sql:
+                ok, repaired_reason = self.validate_sql_for_executor(repaired_sql)
+                if ok:
+                    retry_result = self._invoke_tool_by_name(tool_map, "sql_inter", sql_query=repaired_sql)
+                    retry_text = str(retry_result)
+                    if "执行失败" not in retry_text and "SQL 执行失败" not in retry_text:
+                        return (
+                            "SQL 查询首次失败后修复成功:\n"
+                            f"- 原 SQL: {sql_query}\n"
+                            f"- 修复 SQL: {repaired_sql}\n"
+                            f"- 结果: {retry_text}"
+                        )
+
             return (
                 "SQL 查询执行失败:\n"
                 f"- SQL: {sql_query}\n"

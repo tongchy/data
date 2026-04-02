@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 from api.routes import chat as chat_route
+from api.routes import resume as resume_route
 from agents.supervisor import SupervisorAgent
 from config.settings import Settings
 
@@ -11,6 +12,10 @@ from config.settings import Settings
 class DummySupervisor:
     async def invoke(self, message: str, thread_id: str = None, **kwargs):
         return {"content": f"supervisor:{message}:{thread_id}"}
+
+    async def resume(self, thread_id: str, payload: dict):
+        decision = payload.get("decision", "approve")
+        return {"messages": [SimpleNamespace(content=f"resumed:{thread_id}:{decision}", type="ai")]}
 
 
 def test_chat_route_uses_supervisor(test_client, monkeypatch):
@@ -77,3 +82,18 @@ def test_chat_route_hits_text_processing_branch(test_client, monkeypatch):
     assert body["content"] == ""
     assert "llm_skill" in captured["tool_names"]
     assert "优先使用 llm_skill" in captured["prompt"]
+
+
+def test_resume_route_uses_supervisor_resume(test_client, monkeypatch):
+    monkeypatch.setattr(resume_route, "get_agent", lambda thread_id: DummySupervisor())
+
+    response = test_client.post(
+        "/api/resume",
+        json={"thread_id": "r-1", "decision": "approve"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["thread_id"] == "r-1"
+    assert body["decision"] == "approve"
+    assert body["content"] == "resumed:r-1:approve"

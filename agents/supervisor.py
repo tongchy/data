@@ -15,6 +15,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import create_react_agent
 from langgraph.store.base import BaseStore
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from config.settings import Settings, get_settings
 from models.llm import create_llm
@@ -42,6 +43,8 @@ from tools.loader import table_metadata  # noqa: F401
 
 from agents.subagents import (
     create_sql_agent,
+    create_sql_generator_agent,
+    create_context_guardian_agent,
     create_data_analysis_agent,
     create_visualization_agent
 )
@@ -56,6 +59,7 @@ SUPERVISOR_PROMPT = """【强制规则 - 最高优先级】
 - 任何涉及数据分析、统计计算的任务 → 立即调用 delegate_to_data_analyst
 - 任何涉及图表、可视化的任务 → 立即调用 delegate_to_visualization_specialist
 - 不确定时 → 优先调用 delegate_to_sql_specialist
+- 纯文本总结/改写/分类任务 → 优先使用 llm_skill
 
 ❌ 错误示例（严禁）："我可以通过执行 SHOW TABLES; 来获取表…如果你提供连接信息…"
 ✅ 正确示例（直接调用）：[调用 delegate_to_sql_specialist，task="查询数据库中的所有表"]
@@ -149,7 +153,8 @@ class SupervisorAgent:
     def __init__(
         self,
         settings: Optional[Settings] = None,
-        store: Optional[BaseStore] = None
+        store: Optional[BaseStore] = None,
+        checkpointer: Optional[BaseCheckpointSaver] = None,
     ):
         """
         初始化 Supervisor Agent
@@ -160,6 +165,7 @@ class SupervisorAgent:
         """
         self.settings = settings or get_settings()
         self.store = store
+        self.checkpointer = checkpointer
         
         # 初始化后端
         self._init_backends()
@@ -169,6 +175,8 @@ class SupervisorAgent:
 
         # 线程级运行时状态
         self.thread_states: Dict[str, Dict[str, Any]] = {}
+        # 线程级运行图（用于 HITL interrupt/resume）
+        self.runtime_graphs: Dict[str, Any] = {}
 
         # 初始化子 Agent
         self._init_subagents()
@@ -239,6 +247,8 @@ class SupervisorAgent:
         """初始化子 Agent"""
         # 创建子 Agent
         self.sql_agent = create_sql_agent()
+        self.sql_generator_agent = create_sql_generator_agent()
+        self.context_guardian_agent = create_context_guardian_agent()
         self.data_analysis_agent = create_data_analysis_agent()
         self.visualization_agent = create_visualization_agent()
         
@@ -247,7 +257,12 @@ class SupervisorAgent:
             self.sql_agent,
             self.data_analysis_agent,
             self.visualization_agent
-        ], backend=self.backend)
+        ],
+            backend=self.backend,
+            settings=self.settings,
+            sql_generator_agent=self.sql_generator_agent,
+            context_guardian_agent=self.context_guardian_agent,
+        )
     
     def _create_agent(self) -> None:
         """创建主 Agent"""
@@ -281,7 +296,8 @@ class SupervisorAgent:
             model=llm,
             tools=tools,
             prompt=SUPERVISOR_PROMPT,
-            name="supervisor_agent"
+            name="supervisor_agent",
+            checkpointer=self.checkpointer,
         )
         
         self.tools = tools
@@ -504,8 +520,10 @@ class SupervisorAgent:
             model=self.llm,
             tools=wrapped_tools,
             prompt=runtime_prompt,
-            name="supervisor_agent_runtime"
+            name="supervisor_agent_runtime",
+            checkpointer=self.checkpointer,
         )
+        self.runtime_graphs[effective_thread_id] = runtime_agent
 
         response = await runtime_agent.ainvoke(
             {"messages": self._to_runtime_messages(model_messages)},
@@ -542,6 +560,16 @@ class SupervisorAgent:
         await self.middleware_manager.run_after_agent(state, response)
         
         return response
+
+    async def resume(self, thread_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """恢复指定线程的 HITL 中断执行。"""
+        graph = self.runtime_graphs.get(thread_id) or self.agent
+        from langgraph.types import Command
+
+        return await graph.ainvoke(
+            Command(resume=payload),
+            config={"configurable": {"thread_id": thread_id}},
+        )
     
     def get_tools_info(self) -> Dict[str, List[str]]:
         """获取工具信息"""
@@ -570,7 +598,8 @@ class SupervisorAgent:
 
 def create_supervisor_agent(
     settings: Optional[Settings] = None,
-    store: Optional[BaseStore] = None
+    store: Optional[BaseStore] = None,
+    checkpointer: Optional[BaseCheckpointSaver] = None,
 ) -> SupervisorAgent:
     """
     创建 Supervisor Agent（便捷函数）
@@ -582,4 +611,4 @@ def create_supervisor_agent(
     Returns:
         SupervisorAgent 实例
     """
-    return SupervisorAgent(settings, store)
+    return SupervisorAgent(settings, store, checkpointer)

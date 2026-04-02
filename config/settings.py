@@ -70,6 +70,12 @@ class Settings(BaseSettings):
         default=r"D:\Learning\Learning\大模型\LangChain\Python\langgraph_dataanalysis\agent-chat-ui-main\public",
         description="图像保存基础目录"
     )
+
+    # Human-in-the-Loop（HITL）
+    enable_hitl: bool = Field(default=False, description="是否启用 SQL 执行前人工确认")
+    hitl_timeout_seconds: int = Field(default=300, description="HITL 等待超时时间（秒）")
+    checkpointer_backend: str = Field(default="memory", description="checkpointer 后端类型：memory/sqlite")
+    checkpointer_path: Optional[str] = Field(default=None, description="checkpointer 持久化路径（sqlite 模式）")
     
     model_config = SettingsConfigDict(
         env_file=".env",
