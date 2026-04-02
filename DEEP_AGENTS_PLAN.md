@@ -2,10 +2,10 @@
 
 ## 📋 文档信息
 
-- **版本**: v1.0
+- **版本**: v1.1
 - **创建时间**: 2026-03-30
 - **目标**: 将现有数据分析 Agent 改造为基于 LangChain Deep Agents 架构
-- **状态**: 待审批
+- **状态**: 核心能力已落地（持续优化中）
 
 ---
 
@@ -21,6 +21,16 @@
 - ✅ 长期记忆（跨会话）
 - ✅ 记忆摘要（自动压缩）
 - ✅ 上下文工程管理
+
+### 当前代码落地快照（2026-04-02）
+
+- ✅ `langgraph dev` 已作为主要开发入口（读取 `langgraph.json` + `graph.py:data_agent`）
+- ✅ Supervisor + 3 个 SubAgent（`sql_specialist` / `data_analysis_specialist` / `visualization_specialist`）
+- ✅ `SubAgentMiddleware` 内置 SQL 执行流水线（表上下文收集 -> SQL 生成 -> SQL 工具执行）
+- ✅ 数据语义层缓存（一次构建，多次复用）
+- ✅ 中文任务向量检索（`BAAI/bge-m3` + 余弦相似度）
+- ✅ 主工具名已统一：`sql_inter`、`extract_data`、`python_inter`、`fig_inter`、`table_metadata`
+- ⚠️ `tool_loader/schema_loader/dynamic_register` 仍属于规划项，当前未以独立工具形态落地
 
 ---
 
@@ -104,11 +114,11 @@
 ┌───────────▼────────────────────▼───────────────────▼─────────┐
 │                    Tool Layer (双层架构)                       │
 │  ┌─────────────────────────┐  ┌──────────────────────────┐   │
-│  │   Loader Tools (L1)     │  │   Content Tools (L2)     │   │
-│  │  - tool_loader         │  │  - sql_inter             │   │
-│  │  - schema_loader       │  │  - extract_data          │   │
-│  │  - table_metadata      │  │  - python_inter          │   │
-│  │  - dynamic_register    │  │  - fig_inter             │   │
+│  │   Semantic/Loader (L1)  │  │   Content Tools (L2)     │   │
+│  │  - table_metadata       │  │  - sql_inter             │   │
+│  │  - 语义层缓存构建       │  │  - extract_data          │   │
+│  │  - 向量检索召回         │  │  - python_inter          │   │
+│  │  - 语义层重建工具       │  │  - fig_inter             │   │
 │  └─────────────────────────┘  └──────────────────────────┘   │
 └───────────────────────────────────────────────────────────────┘
             │                    │                   │
@@ -123,65 +133,42 @@
 
 ### 2. 双层工具架构详解
 
-#### L1 层：Loader Tools（元工具层）
+#### L1 层：Semantic/Loader（语义与加载层）
 
-**职责**：动态加载工具和数据表语义，不直接执行业务逻辑
+**职责**：构建并检索数据语义层，为 SQL 生成提供稳定上下文
 
 **工具列表**：
 ```python
-# 1. tool_loader - 工具加载器
-- 功能：根据任务类型动态加载相关工具
-- 触发条件：新任务到达、上下文切换
-- 返回：可用工具列表（仅包含工具元数据）
-
-# 2. schema_loader - 表结构加载器
-- 功能：按需加载数据库表结构和语义信息
-- 触发条件：SQL 查询前、表名提及
-- 返回：表结构、字段说明、关联关系
-
-# 3. table_metadata - 表元数据查询
+# 1. table_metadata - 表元数据查询
 - 功能：查询表的统计信息（行数、更新时间等）
-- 触发条件：表选择决策时
-- 返回：表元数据（不包含实际数据）
+- 触发条件：语义层构建阶段
+- 返回：表元数据（不包含业务查询结果）
 
-# 4. dynamic_register - 动态注册器
-- 功能：运行时注册新发现的工具
-- 触发条件：MCP 服务发现、插件加载
-- 返回：注册成功确认
+# 2. semantic_layer_builder - 语义层构建器（middleware 内部）
+- 功能：聚合表字段、注释、样例数据并缓存
+- 触发条件：首次 SQL 任务或手工刷新
+- 返回：语义层缓存（含表描述）
+
+# 3. vector_retriever - 向量召回器（middleware 内部）
+- 功能：基于 `BAAI/bge-m3` 对任务与表描述做向量匹配
+- 触发条件：SQL 生成前
+- 返回：Top-K 候选表上下文
+
+# 4. rebuild_data_semantic_layer - 语义层重建工具
+- 功能：手动触发语义层刷新
+- 触发条件：表结构更新后
+- 返回：重建成功/失败状态
 ```
 
 **示例**：
 ```python
-# Loader Tool 使用示例
-tool_loader_result = await tool_loader.invoke({
-    "task_type": "data_analysis",
-    "context": {
-        "domain": "device_management",
-        "required_capabilities": ["query", "analyze", "visualize"]
-    }
-})
-# 返回：仅包含相关工具元数据，节省 token
-# {
-#   "tools": [
-#     {"name": "sql_inter", "description": "...", "schema": {...}},
-#     {"name": "extract_data", "description": "...", "schema": {...}}
-#   ]
-# }
-
-schema_result = await schema_loader.invoke({
-    "table_names": ["t_base_device_type", "t_fw_alarm_record"]
-})
-# 返回：表结构语义
-# {
-#   "tables": {
-#     "t_base_device_type": {
-#       "columns": [...],
-#       "description": "设备类型表，存储设备分类信息",
-#       "row_count": 1500,
-#       "relationships": [...]
-#     }
-#   }
-# }
+# 语义层检索示例（逻辑位于 middleware/subagent.py）
+semantic_context = subagent_middleware._retrieve_from_semantic_layer(
+    task_prompt="分析最近7天设备告警趋势",
+    tool_map=tool_map,
+    top_k=4,
+)
+# 返回：包含匹配表名、字段、样例、元数据的 schema_context 字符串
 ```
 
 #### L2 层：Content Tools（内容工具层）
@@ -210,11 +197,9 @@ schema_result = await schema_loader.invoke({
 Supervisor Agent
     ↓
 [Middleware: beforeModel]
-    ├─ 调用 tool_loader
-    │   └─ 返回：[sql_inter, extract_data, python_inter]
-    ├─ 调用 schema_loader
-    │   └─ 返回：t_fw_alarm_record 表结构
-    └─ 动态注册工具和表语义到 context
+    ├─ 读取/构建语义层缓存
+    ├─ 向量召回 Top-K 相关表
+    └─ 组装 schema_context 注入 SQL 生成提示词
     ↓
 [Model Call]
     ├─ 接收：精简的工具列表 + 相关表语义
@@ -239,7 +224,7 @@ Supervisor Agent
 
 ---
 
-### 3. 状态驱动的中间件拦截机制
+### 3. 状态驱动的中间件拦截机制（规划项，未完全落地）
 
 #### 3.1 中间件执行流程
 
@@ -252,8 +237,8 @@ Agent Loop Start
     ↓
 [beforeModel] - 每次模型调用前
     ├─ 状态检查：当前任务类型、用户权限、上下文长度
-    ├─ 工具选择：调用 tool_loader 动态加载
-    ├─ 语义加载：调用 schema_loader 加载表结构
+    ├─ 工具选择：基于任务类型选择可用工具
+    ├─ 语义加载：调用语义层检索相关表结构
     └─ 状态更新：注册工具到 context
     ↓
 [wrapModelCall] - 包装模型调用
@@ -615,12 +600,19 @@ project/
 │   ├── short_term.py                  # 短期记忆（State Backend）
 │   └── long_term.py                   # 长期记忆（Store Backend）
 │
-├── tools/                             # 工具层（保留现有）
+├── tools/                             # 工具层
 │   ├── __init__.py
-│   ├── sql_inter.py                   # SQL 查询工具
-│   ├── extract_data.py                # 数据提取工具
-│   ├── python_inter.py                # Python 执行工具
-│   └── fig_inter.py                   # 可视化绘图工具
+│   ├── base.py
+│   ├── registry.py
+│   ├── dynamic_registry.py
+│   ├── sql/
+│   │   └── query_tool.py              # 工具名: sql_inter
+│   ├── data/
+│   │   └── extract_tool.py            # 工具名: extract_data
+│   ├── code/
+│   │   └── python_executor.py         # 工具名: python_inter
+│   └── visualization/
+│       └── plot_tool.py               # 工具名: fig_inter
 │
 ├── filesystem/                        # 文件系统后端
 │   ├── __init__.py

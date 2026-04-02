@@ -1,0 +1,3 @@
+[console_scripts]
+agent-api = scripts.run_api:main
+agent-smoke = scripts.run_smoke:main

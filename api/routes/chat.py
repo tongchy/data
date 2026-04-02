@@ -37,7 +37,15 @@ async def chat(request: ChatRequest):
         if request.stream:
             raise HTTPException(status_code=400, detail="Use /chat/stream for streaming")
         
-        result = await agent.invoke(request.message, request.thread_id)
+        invoke_kwargs = {}
+        if request.role:
+            invoke_kwargs["role"] = request.role
+        if request.permissions is not None:
+            invoke_kwargs["permissions"] = request.permissions
+        if request.user_id:
+            invoke_kwargs["user_id"] = request.user_id
+
+        result = await agent.invoke(request.message, request.thread_id, **invoke_kwargs)
         
         return ChatResponse(
             content=result.get("content", ""),
@@ -63,7 +71,15 @@ async def chat_stream(request: ChatRequest):
         try:
             agent = get_agent(request.thread_id)
 
-            result = await agent.invoke(request.message, request.thread_id)
+            invoke_kwargs = {}
+            if request.role:
+                invoke_kwargs["role"] = request.role
+            if request.permissions is not None:
+                invoke_kwargs["permissions"] = request.permissions
+            if request.user_id:
+                invoke_kwargs["user_id"] = request.user_id
+
+            result = await agent.invoke(request.message, request.thread_id, **invoke_kwargs)
             payload = ChatStreamResponse(
                 type="assistant",
                 content=result.get("content", ""),

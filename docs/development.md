@@ -32,6 +32,21 @@ cp .env.example .env
 # 编辑 .env 文件，填入你的配置
 ```
 
+关键配置项：
+
+```bash
+# 模型（SiliconFlow）
+MODEL_API_KEY=your_siliconflow_api_key
+MODEL_BASE_URL=https://api.siliconflow.cn/v1
+MODEL_MODEL_NAME=deepseek-ai/DeepSeek-V3
+
+# 数据库
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=your_password
+DB_DATABASE=alarm
+```
+
 ## 代码规范
 
 ### 代码风格
@@ -59,6 +74,34 @@ flake8 .
 ```
 
 ## 测试
+
+## 启动开发服务
+
+### 首选方式：LangGraph Dev
+
+```bash
+# 启动 LangGraph 调试服务器（推荐，提供 Web Studio）
+langgraph dev
+# 访问 http://localhost:2024
+```
+
+### 其他方式
+
+```bash
+# FastAPI REST 服务
+python scripts/run_api.py
+# 或
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 数据语义层预热（可选）
+
+首次发送 SQL 任务时系统会自动构建向量语义层（需访问数据库 + SiliconFlow Embedding API）。
+如需提前预热，可在启动后发送：
+```
+"请重建数据语义层"
+→ Supervisor 调用 rebuild_data_semantic_layer()
+```
 
 ### 运行所有测试
 

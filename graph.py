@@ -69,52 +69,9 @@ def data_agent(config: RunnableConfig) -> Any:
     Returns:
         编译后的 Agent 图
     """
-    from langgraph.graph import StateGraph, MessagesState
-    from langgraph.prebuilt import ToolNode
-    from langchain_core.messages import SystemMessage
-    
-    # 获取 Supervisor Agent
+    # 直接复用 SupervisorAgent 中已创建的 agent，避免重复初始化
     agent = get_supervisor_agent()
-    
-    # 创建 StateGraph
-    workflow = StateGraph(MessagesState)
-    
-    # 定义系统提示
-    system_prompt = """你是一个智能数据分析助手，可以帮助用户：
-1. 查询数据库获取数据
-2. 分析数据并生成报告
-3. 创建可视化图表
-
-请根据用户需求，使用适当的工具完成任务。"""
-    
-    # 定义 Agent 节点
-    def agent_node(state: MessagesState):
-        messages = state["messages"]
-        # 添加系统消息
-        if not any(isinstance(m, SystemMessage) for m in messages):
-            messages = [SystemMessage(content=system_prompt)] + messages
-        
-        # 调用 LLM
-        response = agent.llm.invoke(messages)
-        return {"messages": [response]}
-    
-    # 定义工具节点
-    tool_node = ToolNode(agent.tools)
-    
-    # 添加节点
-    workflow.add_node("agent", agent_node)
-    workflow.add_node("tools", tool_node)
-    
-    # 添加边
-    workflow.set_entry_point("agent")
-    workflow.add_conditional_edges(
-        "agent",
-        lambda state: "tools" if state["messages"][-1].tool_calls else "end"
-    )
-    workflow.add_edge("tools", "agent")
-    
-    # 编译图
-    return workflow.compile()
+    return agent.agent
 
 
 # ============================================================================

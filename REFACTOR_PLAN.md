@@ -2,10 +2,10 @@
 
 ## 📋 文档版本
 
-- **版本**: v2.0
+- **版本**: v2.1
 - **创建时间**: 2026-03-30
 - **重点**: 架构级重构（方案二）
-- **状态**: 待审批
+- **状态**: 主体已落地（文档持续对齐中）
 
 ---
 
@@ -19,6 +19,14 @@
 - ✅ 完善的错误处理和日志记录
 - ✅ 高测试覆盖率（>80%）
 - ✅ 支持水平扩展和部署
+
+### 当前实现快照（2026-04-02）
+
+- ✅ 主入口为 `langgraph dev`（`langgraph.json` + `graph.py`）
+- ✅ 中间件体系已运行：todo/filesystem/subagent/context_edit/tool_cache/tool_auth/state_driven
+- ✅ 子 Agent 体系稳定：SQL/数据分析/可视化三类专家
+- ✅ SQL 链路已接入语义层缓存与向量召回（`BAAI/bge-m3`）
+- ✅ 工具标识统一：`sql_inter`、`extract_data`、`python_inter`、`fig_inter`
 
 ---
 
@@ -69,7 +77,7 @@ project/
 ├── README.md                          # 项目说明
 ├── requirements.txt                   # Python 依赖
 ├── pyproject.toml                     # 项目配置（Poetry/Flit）
-├── setup.py                           # 安装脚本
+├── setup.py                           # （可选）安装脚本
 ├── .env.example                       # 环境变量示例
 ├── .gitignore
 ├── Dockerfile                         # 容器化部署
@@ -110,29 +118,29 @@ project/
 │   ├── __init__.py
 │   ├── base.py                        # 工具基类
 │   ├── registry.py                    # 工具注册中心
-│   ├── decorators.py                  # 工具装饰器
+│   ├── decorators.py                  # （规划）工具装饰器
 │   │
 │   ├── sql/                           # SQL 相关工具
 │   │   ├── __init__.py
-│   │   ├── query_tool.py              # SQL 查询工具
+│   │   ├── query_tool.py              # SQL 查询工具（tool name: sql_inter）
 │   │   ├── analyzer.py                # SQL 分析器
 │   │   └── formatter.py               # 结果格式化
 │   │
 │   ├── data/                          # 数据处理工具
 │   │   ├── __init__.py
-│   │   ├── extract_tool.py            # 数据提取工具
+│   │   ├── extract_tool.py            # 数据提取工具（tool name: extract_data）
 │   │   ├── transform_tool.py          # 数据转换工具
 │   │   └── analysis_tool.py           # 数据分析工具
 │   │
 │   ├── code/                          # 代码执行工具
 │   │   ├── __init__.py
-│   │   ├── python_executor.py         # Python 执行器
+│   │   ├── python_executor.py         # Python 执行器（tool name: python_inter）
 │   │   ├── sandbox.py                 # 沙箱环境
 │   │   └── security.py                # 安全检查
 │   │
 │   └── visualization/                 # 可视化工具
 │       ├── __init__.py
-│       ├── plot_tool.py               # 绘图工具
+│       ├── plot_tool.py               # 绘图工具（tool name: fig_inter）
 │       ├── chart_factory.py           # 图表工厂
 │       └── templates/                 # 图表模板
 │           ├── line_chart.py
@@ -776,7 +784,7 @@ services:
       - DB_PORT=3306
       - DB_USER=root
       - DB_PASSWORD=secret
-      - DB_NAME=alarm
+    - DB_DATABASE=alarm
       - MODEL_API_KEY=${MODEL_API_KEY}
     depends_on:
       - mysql
